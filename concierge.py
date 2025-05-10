@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Your bot token from BotFather
-TOKEN = "7657786948:AAFHWIGrjXLLtqJ-6oFKXXRGXaNw22EaPTM"
+TOKEN = "YOUR_TOKEN"
 eastern = pytz.timezone("US/Eastern")
 
 
