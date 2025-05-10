@@ -12,7 +12,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 import pytz
 import re
 
@@ -41,26 +41,31 @@ def get_user_data(context):
 
 async def set_greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
+    user = update.effective_user
     logger.info(f"Received message: {message}")
     if not message or not message.reply_to_message:
-        await message.reply_text(
-            "❌ You must reply to the message you want to set as the greeting reference."
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="❌ You must reply to the message you want to set as the greeting reference.",
         )
         return
 
-    user = update.effective_user
     chat_id = message.chat_id
 
     # Admin check
     member = await context.bot.get_chat_member(chat_id, user.id)
     if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-        await message.reply_text("Only admins can set the greeting reference.")
+        await context.bot.send_message(
+            chat_id=user.id, text="Only admins can set the greeting reference."
+        )
         return
 
     context.application.bot_data["welcome_message_id"] = (
         message.reply_to_message.message_id
     )
-    await message.reply_text("✅ Greeting reference message has been set.")
+    await context.bot.send_message(
+        chat_id=user.id, text="✅ Greeting reference message has been set."
+    )
 
 
 # Welcome new members and schedule follow-up messages
@@ -257,216 +262,208 @@ async def handle_user_message(
         del user_data[chat_and_user]
 
 
-async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.reply_to_message:
-        await message.reply_text(
-            "❗ Reply to the message you want to attach the event to.\n"
-            "Usage: /addevent YYYY-MM-DD HH:MM Location"
-        )
-        return
+async def process_event_message(
+    message,
+    context: ContextTypes.DEFAULT_TYPE,
+    bot_data: dict,
+    job_queue,
+):
+    text = message.text
+    chat_id = message.chat_id
+    msg_id = message.message_id
 
-    # Admin check
-    member = await context.bot.get_chat_member(
-        message.chat_id, update.effective_user.id
-    )
-    if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-        await message.reply_text("Only admins can add events.")
-        return
-
-    if len(context.args) < 3:
-        await message.reply_text(
-            "❗ Please use:\n/addevent YYYY-MM-DD HH:MM Location"
+    match = EVENT_REGEX.search(text)
+    if not match:
+        await context.bot.send_message(
+            chat_id=message.from_user.id,
+            text="❗ Invalid #event format. Use: `#event YYYY-MM-DD HH:MM Location`",
+            parse_mode="Markdown",
         )
-        return
+        return None
+
+    date_part, time_part, location = match.groups()
 
     try:
-        date_part = context.args[0]
-        time_part = context.args[1]
         event_datetime = datetime.datetime.strptime(
             f"{date_part} {time_part}", "%Y-%m-%d %H:%M"
         )
-        location = " ".join(context.args[2:])
+        if event_datetime.tzinfo is None:
+            event_datetime = eastern.localize(event_datetime)
     except Exception:
-        await message.reply_text(
-            "❗ Invalid format.\nUsage: /addevent YYYY-MM-DD HH:MM Location"
+        await context.bot.send_message(
+            chat_id=message.from_user.id,
+            text="❗ Invalid date format. Use: `#event YYYY-MM-DD HH:MM Location`",
+            parse_mode="Markdown",
         )
+        return None
+
+    now = datetime.datetime.now(eastern)
+    if event_datetime <= now:
+        await context.bot.send_message(
+            chat_id=message.from_user.id,
+            text="❗ Event date must be in the future.",
+        )
+        return None
+
+    # Cancel old jobs if editing
+    if msg_id in bot_data.get("events", {}):
+        for job in bot_data["events"][msg_id]["jobs"]:
+            job.schedule_removal()
+
+    jobs = []
+    for days_before in [7, 5, 1]:
+        reminder_dt = event_datetime - datetime.timedelta(days=days_before)
+        if reminder_dt > now:
+            job = job_queue.run_once(
+                reminder_callback,
+                when=reminder_dt,
+                data={
+                    "chat_id": chat_id,
+                    "msg_id": msg_id,
+                    "event_datetime": event_datetime.strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                    "location": location,
+                    "days_before": days_before,
+                },
+                name=f"event_reminder_{msg_id}_{days_before}",
+            )
+            jobs.append(job)
+
+    bot_data.setdefault("events", {})[msg_id] = {
+        "chat_id": chat_id,
+        "msg_id": msg_id,
+        "event_datetime": event_datetime.strftime("%Y-%m-%d %H:%M"),
+        "sender_id": message.from_user.id,
+        "location": location,
+        "jobs": jobs,
+    }
+
+    return event_datetime, location
+
+
+async def handle_event_tagged_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    message = update.message
+    if not message or not message.text:
         return
 
+    user = update.effective_user
+    chat_id = message.chat_id
+
+    # Admin check
+    member = await context.bot.get_chat_member(chat_id, user.id)
+    if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
+        await message.reply_text("Only admins can schedule events.")
+        return
+
+    event_datetime, location = await process_event_message(
+        context=context,
+        message=message,
+        bot_data=context.application.bot_data,
+        job_queue=context.job_queue,
+    )
+
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=f"✅ Event scheduled for *{event_datetime.strftime('%Y-%m-%d %H:%M')}*\n"
+        f"📍 *Location:* {location}",
+        parse_mode="Markdown",
+    )
+
+
+async def handle_event_tagged_message_edit(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    logger.info("Handling edited message for event.")
+    edited_msg = update.edited_message
+    if (
+        not edited_msg
+        or not edited_msg.text
+        or "#event" not in edited_msg.text
+    ):
+        return
+
+    event_datetime, location = await process_event_message(
+        context=context,
+        message=edited_msg,
+        bot_data=context.application.bot_data,
+        job_queue=context.job_queue,
+    )
+
+    await context.bot.send_message(
+        chat_id=edited_msg.from_user.id,
+        text=f"✏️ Event updated to *{event_datetime.strftime('%Y-%m-%d %H:%M')}*\n"
+        f"📍 *Location:* {location}",
+        parse_mode="Markdown",
+    )
+
+
+async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
+    bot = context.bot
     bot_data = context.application.bot_data
+
     if "events" not in bot_data:
-        bot_data["events"] = {}
+        return
 
-    event_id = str(message.reply_to_message.message_id)
-    chat_id = message.chat_id
+    to_delete = []
 
-    # Schedule reminders
-    jobs = []
-    for days_before in [7, 5, 1]:
-        # Make sure event_datetime is timezone-aware if it isn't already
-        if event_datetime.tzinfo is None:
-            event_datetime = eastern.localize(event_datetime)
+    for msg_id, event in bot_data["events"].items():
+        chat_id = event["chat_id"]
+        sender_id = event.get("sender_id")
 
-        reminder_dt = event_datetime - datetime.timedelta(days=days_before)
+        if sender_id:
+            # Try to silently forward the message to the original sender
+            # This will fail if the message doesn't exist anymore
+            try:
+                # Forward to the original sender with notification disabled
+                forwarded_msg = await bot.forward_message(
+                    chat_id=sender_id,
+                    from_chat_id=chat_id,
+                    message_id=msg_id,
+                    disable_notification=True,
+                )
+                # Delete the forwarded message immediately
+                await bot.delete_message(
+                    chat_id=sender_id, message_id=forwarded_msg.message_id
+                )
+            except BadRequest as e:
+                if (
+                    "message to forward not found" in str(e).lower()
+                    or "message_id_invalid" in str(e).lower()
+                ):
+                    # Send a message to the original poster with event details
+                    await context.bot.send_message(
+                        chat_id=sender_id,
+                        text=(
+                            f"❗ The event message has been deleted. All reminders have been canceled.\n\n"
+                            f"📅 *Date/Time:* {event.get('event_datetime')}\n"
+                            f"📍 *Location:* {event.get('location')}"
+                        ),
+                        parse_mode="Markdown",
+                    )
+                    # Message is deleted
+                    for job in event["jobs"]:
+                        job.schedule_removal()
+                    to_delete.append(msg_id)
+        # Delete entries for messages that no longer exist
+    for msg_id in to_delete:
+        del bot_data["events"][msg_id]
 
-        # Get current time as timezone-aware
-        now = datetime.datetime.now(eastern)
-
-        if reminder_dt > now:
-            job = context.job_queue.run_once(
-                reminder_callback,
-                when=reminder_dt,
-                data={
-                    "chat_id": chat_id,
-                    "msg_id": int(event_id),
-                    "event_datetime": event_datetime.strftime(
-                        "%Y-%m-%d %H:%M"
-                    ),
-                    "location": location,
-                    "days_before": days_before,
-                },
-                name=f"event_reminder_{event_id}_{days_before}",
-            )
-            jobs.append(job)
-
-    # Store event
-    bot_data["events"][event_id] = {
-        "chat_id": chat_id,
-        "msg_id": int(event_id),
-        "event_datetime": event_datetime.strftime("%Y-%m-%d %H:%M"),
-        "location": location,
-        "jobs": jobs,
-    }
-
-    await message.reply_text(
-        f"✅ Event scheduled for *{event_datetime.strftime('%Y-%m-%d %H:%M')}*.\n"
-        f"📍 *Location:* {location}",
-        parse_mode="Markdown",
-    )
-
-
-async def edit_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.reply_to_message:
-        await message.reply_text(
-            "❗ Reply to the event message you want to edit.\n"
-            "Usage: /editevent YYYY-MM-DD HH:MM Location"
+    if to_delete:
+        logger.info(
+            f"Deleted {len(to_delete)} events due to deleted messages."
         )
-        return
-
-    # Admin check
-    member = await context.bot.get_chat_member(
-        message.chat_id, update.effective_user.id
-    )
-    if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-        await message.reply_text("Only admins can edit events.")
-        return
-
-    if len(context.args) < 3:
-        await message.reply_text(
-            "❗ Please use:\n/editevent YYYY-MM-DD HH:MM Location"
-        )
-        return
-
-    event_id = str(message.reply_to_message.message_id)
-    bot_data = context.application.bot_data
-
-    # Check if event exists
-    if "events" not in bot_data or event_id not in bot_data["events"]:
-        await message.reply_text(
-            "❌ Event not found. Please reply to a valid event message."
-        )
-        return
-
-    try:
-        date_part = context.args[0]
-        time_part = context.args[1]
-        event_datetime = datetime.datetime.strptime(
-            f"{date_part} {time_part}", "%Y-%m-%d %H:%M"
-        )
-        location = " ".join(context.args[2:])
-    except Exception:
-        await message.reply_text(
-            "❗ Invalid format.\nUsage: /editevent YYYY-MM-DD HH:MM Location"
-        )
-        return
-
-    chat_id = message.chat_id
-
-    # Remove old jobs first
-    for job in bot_data["events"][event_id]["jobs"]:
-        job.schedule_removal()
-
-    # Create new jobs with updated data
-    jobs = []
-    for days_before in [7, 5, 1]:
-        # Make sure event_datetime is timezone-aware if it isn't already
-        if event_datetime.tzinfo is None:
-            event_datetime = eastern.localize(event_datetime)
-
-        reminder_dt = event_datetime - datetime.timedelta(days=days_before)
-
-        # Get current time as timezone-aware
-        now = datetime.datetime.now(eastern)
-
-        if reminder_dt > now:
-            job = context.job_queue.run_once(
-                reminder_callback,
-                when=reminder_dt,
-                data={
-                    "chat_id": chat_id,
-                    "msg_id": int(event_id),
-                    "event_datetime": event_datetime.strftime(
-                        "%Y-%m-%d %H:%M"
-                    ),
-                    "location": location,
-                    "days_before": days_before,
-                },
-                name=f"event_reminder_{event_id}_{days_before}",
-            )
-            jobs.append(job)
-
-    # Update event data
-    bot_data["events"][event_id] = {
-        "chat_id": chat_id,
-        "msg_id": int(event_id),
-        "event_datetime": event_datetime.strftime("%Y-%m-%d %H:%M"),
-        "location": location,
-        "jobs": jobs,
-    }
-
-    await message.reply_text(
-        f"✏️ Event updated to *{event_datetime.strftime('%Y-%m-%d %H:%M')}*.\n"
-        f"📍 *Location:* {location}",
-        parse_mode="Markdown",
-    )
 
 
-async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.reply_to_message:
-        await message.reply_text("❌ Reply to the event message to delete it.")
-        return
+def unified_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
 
-    member = await context.bot.get_chat_member(
-        message.chat_id, update.effective_user.id
-    )
-    if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-        await message.reply_text("Only admins can delete events.")
-        return
-
-    event_id = str(message.reply_to_message.message_id)
-    bot_data = context.application.bot_data
-
-    if "events" not in bot_data or event_id not in bot_data["events"]:
-        await message.reply_text("❌ Event not found.")
-        return
-
-    for job in bot_data["events"][event_id]["jobs"]:
-        job.schedule_removal()
-    del bot_data["events"][event_id]
-
-    await message.reply_text("🗑️ Event and its reminders have been deleted.")
+    if "#event" in message.text:
+        return handle_event_tagged_message(update, context)
+    else:
+        return handle_user_message(update, context)
 
 
 async def reminder_callback(context: ContextTypes.DEFAULT_TYPE):
@@ -484,7 +481,7 @@ async def reminder_callback(context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Remove this job from the event's jobs list
-        event_id = str(job_data["msg_id"])
+        event_id = job_data["msg_id"]
         if (
             "events" in context.application.bot_data
             and event_id in context.application.bot_data["events"]
@@ -512,9 +509,6 @@ def main() -> None:
     # Create the Application
     application = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("addevent", add_event))
-    application.add_handler(CommandHandler("editevent", edit_event))
-    application.add_handler(CommandHandler("deleteevent", delete_event))
     application.add_handler(CommandHandler("setgreeting", set_greeting))
 
     # Add message handler for new chat members
@@ -524,9 +518,21 @@ def main() -> None:
         )
     )
 
+    application.job_queue.run_repeating(
+        cleanup_deleted_events,
+        interval=10,  # 30 minutes
+        first=10,  # Start 10 seconds after bot startup
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.EDITED_MESSAGE, handle_event_tagged_message_edit
+        )
+    )
+
     # Add message handler for all messages (to cancel scheduled intros)
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, unified_handler)
     )
 
     # Log when the bot starts
@@ -534,7 +540,7 @@ def main() -> None:
 
     # Start the Bot with error handling
     try:
-        application.run_polling(allowed_updates=["message"])
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Bot started successfully!")
     except Exception as e:
         logger.error(f"Error starting bot: {e}")
