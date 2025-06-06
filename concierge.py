@@ -70,6 +70,14 @@ async def set_menu_button_and_commands(application):
     )
 
 
+def initialize_user_private_chat(**user_data):
+    user_id = user_data.get("user_id")
+    db.add_new_user(**user_data)
+    db.mark_users_intro_sent(user_id, [user_id])
+    db.mark_users_welcomed(user_id, [user_id])
+    db.mark_user_posted(user_id, user_id)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_data = {
@@ -78,10 +86,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "first_name": user.first_name,
         "username": user.username,
     }
-    db.add_new_user(**user_data)
-    db.mark_user_posted(
-        update.effective_chat.id, user.id
-    )  # Mark user as having posted
+    initialize_user_private_chat(**user_data)  # Mark user as having posted
     welcome_text = f"👋 Welcome, {user.first_name}!\n\nWould you like to subscribe to event notifications?"
 
     # Inline button
@@ -102,13 +107,13 @@ async def toggle_user_subscription(
     user_id: int, user_first_name: str, user_username=None
 ) -> str:
     if not db.get_user_private_chat(user_id):
-        db.add_new_user(
-            chat_id=user_id,
-            user_id=user_id,
-            first_name=user_first_name,
-            username=user_username,
-        )
-        db.mark_user_posted(user_id, user_id)
+        user_data = {
+            "chat_id": user_id,
+            "user_id": user_id,
+            "first_name": user_first_name,
+            "username": user_username,
+        }
+        initialize_user_private_chat(**user_data)
 
     db.toggle_notification_subscription(user_id)
 
@@ -185,7 +190,7 @@ async def set_greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def greet_new_members(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Greets new members and stores them in database."""
+    """Add new members to database without immediate greeting."""
     if not update.message or not update.message.new_chat_members:
         return
 
@@ -195,7 +200,7 @@ async def greet_new_members(
         if new_member.id == context.bot.id:
             continue
 
-        # Add user to database
+        # Add user to database (welcomed flag defaults to 0)
         db.add_new_user(
             chat_id=chat.id,
             user_id=new_member.id,
@@ -203,32 +208,9 @@ async def greet_new_members(
             first_name=new_member.first_name,
         )
 
-        if new_member.username:
-            mention = f"@{new_member.username}"
-        else:
-            mention = f'<a href="tg://user?id={new_member.id}">{new_member.first_name}</a>'
-
-        welcome_message = (
-            f"Welcome to {chat.title}, {mention}! 👋\n\n"
-            f"We're glad to have you here!\n\n"
-            f"Please take a moment to read our group rules and guidelines: "
-            f'<a href="{GROUP_RULES_LINK}"> Group Rules</a>'
+        logger.info(
+            f"Added new member {new_member.username or new_member.first_name} to database"
         )
-
-        try:
-            reply_id_str = db.get_setting("welcome_message_id")
-            reply_id = int(reply_id_str) if reply_id_str else None
-
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text=welcome_message,
-                reply_to_message_id=reply_id,
-                parse_mode="HTML",
-            )
-            logger.info(f"Welcomed {mention} to {chat.title}")
-
-        except TelegramError as e:
-            logger.error(f"Failed to send welcome message: {e}")
 
 
 async def check_and_send_intros(context: ContextTypes.DEFAULT_TYPE):
@@ -304,8 +286,175 @@ async def handle_user_message(
     user = update.effective_user
     chat = update.effective_chat
 
-    # Mark user as having posted (this will prevent future intro messages)
+    # Mark user as having posted
     db.mark_user_posted(chat.id, user.id)
+
+
+async def send_daily_welcome(context: ContextTypes.DEFAULT_TYPE):
+    """Send welcome message at 6PM for all unwelcomed users in non-private chats."""
+    # Get all users who haven't been welcomed yet in non-private chats
+    unwelcomed_users = db.get_unwelcomed_users_non_private()
+
+    if not unwelcomed_users:
+        return
+
+    # Group users by chat_id
+    users_by_chat = {}
+    for chat_id, user_id, username, first_name in unwelcomed_users:
+        if chat_id not in users_by_chat:
+            users_by_chat[chat_id] = []
+        users_by_chat[chat_id].append((user_id, username, first_name))
+
+    # Send ONE welcome message per chat for ALL unwelcomed users in that chat
+    for chat_id, users in users_by_chat.items():
+        try:
+            # Get chat info for the welcome message
+            chat = await context.bot.get_chat(chat_id)
+
+            # Create mentions for all users
+            mentions = []
+            user_ids_to_mark = []
+
+            for user_id, username, first_name in users:
+                if username:
+                    mentions.append(f"@{username}")
+                else:
+                    mentions.append(
+                        f'<a href="tg://user?id={user_id}">{first_name}</a>'
+                    )
+                user_ids_to_mark.append(user_id)
+
+            # Skip this chat if no users to welcome (all were in private chats)
+            if not mentions:
+                continue
+
+            # Create ONE welcome message for ALL users
+            if len(mentions) == 1:
+                welcome_message = (
+                    f"Welcome to {chat.title}, {mentions[0]}! 👋\n\n"
+                    f"We're glad to have you here!\n\n"
+                    f"Please take a moment to read our group rules and guidelines: "
+                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                )
+            else:
+                mentions_text = (
+                    ", ".join(mentions[:-1]) + f" and {mentions[-1]}"
+                )
+                welcome_message = (
+                    f"Welcome to {chat.title}, {mentions_text}! 👋\n\n"
+                    f"We're glad to have you all here!\n\n"
+                    f"Please take a moment to read our group rules and guidelines: "
+                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                )
+
+            # Send the message
+            reply_id_str = db.get_setting("welcome_message_id")
+            reply_id = int(reply_id_str) if reply_id_str else None
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=welcome_message,
+                reply_to_message_id=reply_id,
+                parse_mode="HTML",
+            )
+
+            # Mark all users as welcomed
+            db.mark_users_welcomed(chat_id, user_ids_to_mark)
+
+            logger.info(
+                f"Sent welcome message to {len(users)} users in {chat.title}"
+            )
+
+        except TelegramError as e:
+            logger.error(
+                f"Failed to send welcome message to chat {chat_id}: {e}"
+            )
+
+
+async def send_intro_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Send intro reminders on specific days (1st, 8th, 15th, 22nd) for ALL users who haven't posted."""
+    today = datetime.date.today()
+
+    # Check if today is one of the notification days
+    if today.day not in [6, 8, 15, 22]:
+        return
+
+    # Get ALL users who need intro reminders (joined 3+ days ago, haven't posted, not yet sent intro)
+    users_for_intro = db.get_users_for_intro_reminder()
+
+    if not users_for_intro:
+        return
+
+    # Group users by chat_id
+    users_by_chat = {}
+    for chat_id, user_id, username, first_name in users_for_intro:
+        if chat_id not in users_by_chat:
+            users_by_chat[chat_id] = []
+        users_by_chat[chat_id].append((user_id, username, first_name))
+
+    # Send ONE intro message per chat for ALL users who need it in that chat
+    for chat_id, users in users_by_chat.items():
+        try:
+            # Create mentions for all users
+            mentions = []
+            user_ids_to_mark = []
+
+            for user_id, username, first_name in users:
+                if username:
+                    mentions.append(f"@{username}")
+                else:
+                    mentions.append(
+                        f'<a href="tg://user?id={user_id}">{first_name}</a>'
+                    )
+                user_ids_to_mark.append(user_id)
+
+            # Skip this chat if no users to notify (all were in private chats)
+            if not mentions:
+                continue
+
+            # Create ONE intro reminder message for ALL users
+            if len(mentions) == 1:
+                message = (
+                    f"Hey {mentions[0]}! 👋\n\n"
+                    f"We noticed you haven't said anything yet since joining our group. "
+                    f"Feel free to introduce yourself and join our discussions! "
+                    f"We'd love to hear from you.\n\n"
+                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                )
+            else:
+                mentions_text = (
+                    ", ".join(mentions[:-1]) + f" and {mentions[-1]}"
+                )
+                message = (
+                    f"Hey {mentions_text}! 👋\n\n"
+                    f"We noticed you haven't said anything yet since joining our group. "
+                    f"Feel free to introduce yourselves and join our discussions! "
+                    f"We'd love to hear from you all.\n\n"
+                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                )
+
+            # Send the message
+            reply_id_str = db.get_setting("welcome_message_id")
+            reply_id = int(reply_id_str) if reply_id_str else None
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode="HTML",
+                reply_to_message_id=reply_id,
+            )
+
+            # Mark all users as having received intro reminder
+            db.mark_users_intro_sent(chat_id, user_ids_to_mark)
+
+            logger.info(
+                f"Sent intro reminder to {len(users)} users in chat {chat_id}"
+            )
+
+        except TelegramError as e:
+            logger.error(
+                f"Failed to send intro message to chat {chat_id}: {e}"
+            )
 
 
 async def process_event_message(message, context: ContextTypes.DEFAULT_TYPE):
@@ -577,11 +726,18 @@ def main() -> None:
         )
     )
 
-    # Periodic tasks
-    application.job_queue.run_repeating(
-        check_and_send_intros,
-        interval=10,  # Check every 5 minutes
-        first=10,  # Start 30 seconds after bot startup
+    # Schedule daily welcome at 6PM Eastern
+    application.job_queue.run_daily(
+        send_daily_welcome,
+        time=datetime.time(hour=15, minute=45, tzinfo=eastern),  # 6PM Eastern
+        name="daily_welcome",
+    )
+
+    # Schedule intro reminder check daily at 9AM Eastern (will only send on specific days)
+    application.job_queue.run_daily(
+        send_intro_reminders,
+        time=datetime.time(hour=15, minute=45, tzinfo=eastern),  # 9AM Eastern
+        name="intro_reminders",
     )
 
     application.job_queue.run_repeating(

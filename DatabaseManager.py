@@ -46,8 +46,8 @@ class DatabaseManager:
                     username TEXT,
                     first_name TEXT,
                     join_time TIMESTAMP NOT NULL,
-                    first_intro_sent BOOLEAN DEFAULT 0,
-                    second_intro_sent BOOLEAN DEFAULT 0,
+                    welcomed BOOLEAN DEFAULT 0,
+                    intro_sent BOOLEAN DEFAULT 0,
                     notification_subscription BOOLEAN DEFAULT 0,
                     user_posted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -174,9 +174,9 @@ class DatabaseManager:
                 """
                 SELECT notification_subscription
                 FROM users
-                WHERE user_id = ?
+                WHERE user_id = ? AND chat_id = ?
             """,
-                (user_id,),
+                (user_id, user_id),
             )
             result = cursor.fetchone()
             return result["notification_subscription"] if result else None
@@ -268,33 +268,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting users for intro: {e}")
             return []
-        finally:
-            conn.close()
-
-    def mark_intro_sent(self, chat_id, user_id, stage):
-        """Mark that an intro message has been sent."""
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            if stage == "first":
-                cursor.execute(
-                    """
-                    UPDATE users SET first_intro_sent = 1
-                    WHERE chat_id = ? AND user_id = ?
-                """,
-                    (chat_id, user_id),
-                )
-            else:
-                cursor.execute(
-                    """
-                    UPDATE users SET second_intro_sent = 1
-                    WHERE chat_id = ? AND user_id = ?
-                """,
-                    (chat_id, user_id),
-                )
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Error marking intro as sent: {e}")
         finally:
             conn.close()
 
@@ -439,5 +412,97 @@ class DatabaseManager:
             conn.commit()
         except Exception as e:
             logger.error(f"Error setting setting: {e}")
+        finally:
+            conn.close()
+
+    def get_unwelcomed_users_non_private(self):
+        """Get all users who haven't been welcomed yet in non-private chats."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT chat_id, user_id, username, first_name
+                FROM users
+                WHERE welcomed = 0 AND chat_id < 0
+                ORDER BY join_time ASC
+            """
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error getting unwelcomed users: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def mark_users_welcomed(self, chat_id, user_ids):
+        """Mark multiple users as welcomed."""
+        if not user_ids:
+            return
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" * len(user_ids))
+            cursor.execute(
+                f"""
+                UPDATE users SET welcomed = 1
+                WHERE chat_id = ? AND user_id IN ({placeholders})
+            """,
+                [chat_id] + user_ids,
+            )
+            conn.commit()
+            logger.info(f"Marked {len(user_ids)} users as welcomed")
+        except Exception as e:
+            logger.error(f"Error marking users as welcomed: {e}")
+        finally:
+            conn.close()
+
+    def get_users_for_intro_reminder(self):
+        """Get ALL users who need intro reminders (joined 3+ days ago, not posted, not yet sent intro)."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            now = datetime.datetime.now(eastern)
+            # Users who joined 3+ days ago
+            target_time = (now - datetime.timedelta(seconds=10)).isoformat()
+
+            cursor.execute(
+                """
+                SELECT chat_id, user_id, username, first_name
+                FROM users
+                WHERE user_posted = 0
+                AND intro_sent = 0
+                AND join_time <= ?
+                AND chat_id < 0
+                ORDER BY join_time ASC
+            """,
+                (target_time,),
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error getting users for intro reminder: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def mark_users_intro_sent(self, chat_id, user_ids):
+        """Mark multiple users as having received intro reminder."""
+        if not user_ids:
+            return
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" * len(user_ids))
+            cursor.execute(
+                f"""
+                UPDATE users SET intro_sent = 1
+                WHERE chat_id = ? AND user_id IN ({placeholders})
+            """,
+                [chat_id] + user_ids,
+            )
+            conn.commit()
+            logger.info(f"Marked {len(user_ids)} users as intro sent")
+        except Exception as e:
+            logger.error(f"Error marking users as intro sent: {e}")
         finally:
             conn.close()
