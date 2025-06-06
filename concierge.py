@@ -155,38 +155,6 @@ async def handle_notifications_command(
     await update.message.reply_text(status_msg, parse_mode="Markdown")
 
 
-async def set_greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    user = update.effective_user
-    logger.info(f"Received message: {message}")
-
-    if not message or not message.reply_to_message:
-        await context.bot.send_message(
-            chat_id=user.id,
-            text="❌ You must reply to the message you want to set as the greeting reference.",
-        )
-        return
-
-    chat_id = message.chat_id
-
-    # Admin check
-    member = await context.bot.get_chat_member(chat_id, user.id)
-    if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-        await context.bot.send_message(
-            chat_id=user.id, text="Only admins can set the greeting reference."
-        )
-        return
-
-    # Store in database instead of bot_data
-    db.set_setting(
-        "welcome_message_id", str(message.reply_to_message.message_id)
-    )
-
-    await context.bot.send_message(
-        chat_id=user.id, text="✅ Greeting reference message has been set."
-    )
-
-
 async def greet_new_members(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -211,65 +179,6 @@ async def greet_new_members(
         logger.info(
             f"Added new member {new_member.username or new_member.first_name} to database"
         )
-
-
-async def check_and_send_intros(context: ContextTypes.DEFAULT_TYPE):
-    """Check for users who need intro messages and send them."""
-    # Check for first intros (3 days)
-    users_for_first = db.get_users_for_intro("first")
-    for chat_id, user_id, username, first_name in users_for_first:
-        await send_intro_message(
-            context, chat_id, user_id, username, first_name, "first"
-        )
-        db.mark_intro_sent(chat_id, user_id, "first")
-
-    # Check for second intros (5 days)
-    users_for_second = db.get_users_for_intro("second")
-    for chat_id, user_id, username, first_name in users_for_second:
-        await send_intro_message(
-            context, chat_id, user_id, username, first_name, "second"
-        )
-        db.mark_intro_sent(chat_id, user_id, "second")
-
-
-async def send_intro_message(
-    context, chat_id, user_id, username, first_name, stage
-):
-    """Send an intro message to a user."""
-    if username:
-        mention = f"@{username}"
-    else:
-        mention = f'<a href="tg://user?id={user_id}">{first_name}</a>'
-
-    if stage == "first":
-        message = (
-            f"Hey {mention}! It's been 3 days since you joined our group.\n\n"
-            f"We noticed you haven't said anything yet. Feel free to introduce yourself "
-            f"and join our discussions! We'd love to hear from you."
-            f'<a href="{GROUP_RULES_LINK}"> Group Rules</a>'
-        )
-    else:  # second
-        message = (
-            f"Hello again {mention}!\n\n"
-            f"Just checking in as it's been almost a week since you joined. "
-            f"If you have any questions about our group or need help with anything, "
-            f"don't hesitate to ask! We're here to help."
-            f'<a href="{GROUP_RULES_LINK}"> Group Rules</a>'
-        )
-
-    try:
-        reply_id_str = db.get_setting("welcome_message_id")
-        reply_id = int(reply_id_str) if reply_id_str else None
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=message,
-            parse_mode="HTML",
-            reply_to_message_id=reply_id,
-        )
-        logger.info(f"Sent {stage} intro message to {username or first_name}")
-    except TelegramError as e:
-        logger.error(f"Failed to send {stage} intro message: {e}")
 
 
 async def handle_user_message(
@@ -525,11 +434,10 @@ async def handle_event_tagged_message(
     if result:
         event_datetime, location = result
         event_datetime = datetime.datetime.fromisoformat(event_datetime)
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=f"✅ Event scheduled for *{event_datetime.strftime('%Y-%m-%d %H:%M')}*\n"
-            f"📍 *Location:* {location}",
-            parse_mode="Markdown",
+
+        # Send event created notification to all subscribed users
+        await send_event_notification_to_subscribers(
+            context, message, event_datetime, location, is_new_event=True
         )
 
 
@@ -549,18 +457,69 @@ async def handle_event_tagged_message_edit(
     if result:
         event_datetime, location = result
         event_datetime = datetime.datetime.fromisoformat(event_datetime)
+
+        # Send event changed notification to group
         await context.bot.send_message(
-            chat_id=edited_msg.from_user.id,
-            text=f"✏️ Event updated to *{event_datetime.strftime('%Y-%m-%d %H:%M')}*\n"
+            chat_id=edited_msg.chat_id,
+            text=f"✏️ *Event Updated*\n\n"
+            f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
             f"📍 *Location:* {location}",
             parse_mode="Markdown",
+            reply_to_message_id=edited_msg.message_id,
+        )
+
+        # Send event changed notification to all subscribed users
+        await send_event_notification_to_subscribers(
+            context, edited_msg, event_datetime, location, is_new_event=False
         )
 
 
+async def send_event_notification_to_subscribers(
+    context: ContextTypes.DEFAULT_TYPE,
+    message,
+    event_datetime: datetime.datetime,
+    location: str,
+    is_new_event: bool,
+):
+    """Send event notifications to all subscribed users."""
+    try:
+        users_to_notify = db.get_users_for_notification()
+        action_text = "New Event" if is_new_event else "Event Updated"
+
+        for user in users_to_notify:
+            try:
+                # Send notification text
+                await context.bot.send_message(
+                    chat_id=user[0],
+                    text=f"📢 *{action_text}*\n\n"
+                    f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"📍 *Location:* {location}",
+                    parse_mode="Markdown",
+                )
+
+                # Forward the actual event message
+                await context.bot.forward_message(
+                    chat_id=user[0],
+                    from_chat_id=message.chat_id,
+                    message_id=message.message_id,
+                    disable_notification=True,
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to send event notification to user {user[0]}: {e}"
+                )
+
+    except Exception as e:
+        logger.error(f"Failed to get users for notification: {e}")
+
+
 async def check_and_send_event_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Check for events that need reminders and send them."""
+    """Daily job to check for events that need reminders and send them at 9 AM."""
     events = db.get_events_for_reminders()
-    now = datetime.datetime.now(eastern)
+    today = datetime.date.today()
+
+    logger.info(f"Checking event reminders for {today}")
 
     for (
         event_id,
@@ -569,74 +528,92 @@ async def check_and_send_event_reminders(context: ContextTypes.DEFAULT_TYPE):
         _,
         event_datetime,
         location,
-        reminders_sent_str,
         updated_at,
     ) in events:
+        # Check each reminder period (7, 3, 1 days before, and event day)
+        reminder_days = [7, 3, 1, 0]  # 0 = event day
+        event_date = event_datetime.date()
+
+        # Find which reminder should be sent today (if any)
+        todays_reminder = None
+        for days_before in reminder_days:
+            reminder_date = event_date - datetime.timedelta(days=days_before)
+            if today == reminder_date:
+                todays_reminder = days_before
+                break
+
+        # If no reminder is due today, skip this event
+        if todays_reminder is None:
+            continue
+
+        reminder_datetime = eastern.localize(
+            datetime.datetime.combine(today, datetime.time(9, 0))
+        )
+
+        # Ensure updated_at is timezone-aware
+        updated_at_dt = datetime.datetime.fromisoformat(updated_at)
+        if updated_at_dt.tzinfo is None:
+            # Assume Eastern if updated_at is naive
+            updated_at_dt = eastern.localize(updated_at_dt)
+
+        if reminder_datetime < updated_at_dt:
+            logger.info(
+                f"Skipping reminder for event {event_id} (reminder time: {reminder_datetime}, updated at: {updated_at_dt})"
+            )
+            continue
+
+        # Send only today's reminder (skip any missed previous reminders)
+        days_before = todays_reminder
         try:
-            reminders_sent = (
-                json.loads(reminders_sent_str) if reminders_sent_str else []
-            )
-        except json.JSONDecodeError:
-            reminders_sent = []
-
-        # Check each reminder period (7, 5, 1 days before)
-        for days_before in [7, 5, 1]:
-            if days_before in reminders_sent:
-                continue
-
-            reminder_time = event_datetime - datetime.timedelta(
-                days=days_before
-            )
-
-            if reminder_time < datetime.datetime.fromisoformat(updated_at):
-                logger.info(
-                    f"Skipping reminder for {event_datetime} (reminder time: {reminder_time}, updated at: {updated_at})"
+            # Determine reminder text based on days_before
+            if days_before == 0:
+                reminder_text = "📅 *Today's Event*"
+                days_text = "Today"
+            elif days_before == 1:
+                reminder_text = "⏰ *Event Reminder* — Tomorrow!"
+                days_text = "Tomorrow"
+            else:
+                reminder_text = (
+                    f"⏰ *Event Reminder* — {days_before} days left!"
                 )
-                continue
+                days_text = f"{days_before} days"
 
-            if now >= reminder_time:
+            message_content = (
+                f"{reminder_text}\n\n"
+                f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
+                f"📍 *Location:* {location}"
+            )
+
+            # Send to subscribed users
+            users_to_notify = db.get_users_for_notification()
+            logger.info(
+                f"Sending {days_text} reminder for event {event_id} to {len(users_to_notify)} users"
+            )
+
+            for user in users_to_notify:
                 try:
-                    users_to_notify = db.get_users_for_notification()
-                    logger.info(
-                        f"Sending {days_before}-day reminder to users: {users_to_notify}"
-                    )
-                    for user in users_to_notify:
-                        try:
-                            await context.bot.send_message(
-                                chat_id=user[0],
-                                text=(
-                                    f"⏰ *Event Reminder* — {days_before} day(s) left!\n\n"
-                                    f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
-                                    f"📍 *Location:* {location}"
-                                ),
-                                parse_mode="Markdown",
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send reminder to user {user[0]}: {e}"
-                            )
-
                     await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"⏰ *Event Reminder* — {days_before} day(s) left!\n\n"
-                            f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
-                            f"📍 *Location:* {location}"
-                        ),
+                        chat_id=user[0],
+                        text=message_content,
                         parse_mode="Markdown",
-                        reply_to_message_id=message_id,
                     )
-
-                    # Mark this reminder as sent
-                    reminders_sent.append(days_before)
-                    db.update_event_reminders(event_id, reminders_sent)
-
-                    logger.info(
-                        f"Sent {days_before}-day reminder for event {message_id}"
-                    )
-
                 except Exception as e:
-                    logger.error(f"Failed to send reminder: {e}")
+                    logger.error(
+                        f"Failed to send reminder to user {user[0]}: {e}"
+                    )
+
+            # Send to group chat
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message_content,
+                parse_mode="Markdown",
+                reply_to_message_id=message_id,
+            )
+
+            logger.info(f"Sent {days_text} reminder for event {event_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to send reminder for event {event_id}: {e}")
 
 
 async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
@@ -650,7 +627,6 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
         sender_id,
         event_datetime,
         location,
-        _,
         _,
     ) in events:
         try:
@@ -686,9 +662,7 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
 
                 # Delete from database
                 db.delete_event(chat_id, message_id)
-                logger.info(
-                    f"Deleted event {message_id} due to deleted message"
-                )
+                logger.info(f"Deleted event {event_id} due to deleted message")
 
 
 def unified_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -705,7 +679,9 @@ def main() -> None:
     # Create the Application
     application = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("setgreeting", set_greeting))
+    # Set commands and menu before polling starts
+    application.post_init = set_menu_button_and_commands
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(
         CallbackQueryHandler(
@@ -716,40 +692,11 @@ def main() -> None:
         CommandHandler("notifications", handle_notifications_command)
     )
 
-    # Set commands and menu before polling starts
-    application.post_init = set_menu_button_and_commands
-
     # Add message handler for new chat members
     application.add_handler(
         MessageHandler(
             filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_new_members
         )
-    )
-
-    # Schedule daily welcome at 6PM Eastern
-    application.job_queue.run_daily(
-        send_daily_welcome,
-        time=datetime.time(hour=15, minute=45, tzinfo=eastern),  # 6PM Eastern
-        name="daily_welcome",
-    )
-
-    # Schedule intro reminder check daily at 9AM Eastern (will only send on specific days)
-    application.job_queue.run_daily(
-        send_intro_reminders,
-        time=datetime.time(hour=15, minute=45, tzinfo=eastern),  # 9AM Eastern
-        name="intro_reminders",
-    )
-
-    application.job_queue.run_repeating(
-        check_and_send_event_reminders,
-        interval=10,  # Check every 5 minutes
-        first=10,  # Start 1 minute after bot startup
-    )
-
-    application.job_queue.run_repeating(
-        cleanup_deleted_events,
-        interval=10,  # Check every 30 minutes
-        first=10,  # Start 90 seconds after bot startup
     )
 
     application.add_handler(
@@ -761,6 +708,32 @@ def main() -> None:
     # Add message handler for all messages
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, unified_handler)
+    )
+
+    # Schedule daily welcome at 6PM Eastern
+    application.job_queue.run_daily(
+        send_daily_welcome,
+        time=datetime.time(hour=18, minute=0, tzinfo=eastern),  # 6PM Eastern
+        name="daily_welcome",
+    )
+
+    # Schedule intro reminder check daily at 9AM Eastern (will only send on specific days)
+    application.job_queue.run_daily(
+        send_intro_reminders,
+        time=datetime.time(hour=17, minute=0, tzinfo=eastern),  # 5PM Eastern
+        name="intro_reminders",
+    )
+
+    application.job_queue.run_daily(
+        check_and_send_event_reminders,
+        time=datetime.time(hour=9, minute=0, tzinfo=eastern),  # 9 AM Eastern
+        name="daily_event_reminders",
+    )
+
+    application.job_queue.run_repeating(
+        cleanup_deleted_events,
+        interval=10800,  # Check every 3 hours
+        first=10,  # Start 10 seconds after bot startup
     )
 
     # Log when the bot starts

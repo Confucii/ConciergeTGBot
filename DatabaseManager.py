@@ -66,7 +66,6 @@ class DatabaseManager:
                     sender_id INTEGER NOT NULL,
                     event_datetime TIMESTAMP NOT NULL,
                     location TEXT NOT NULL,
-                    reminders_sent TEXT DEFAULT '[]',  -- JSON array of sent reminder days
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(chat_id, message_id)
@@ -309,7 +308,7 @@ class DatabaseManager:
 
             cursor.execute(
                 """
-                SELECT id, chat_id, message_id, sender_id, event_datetime, location, reminders_sent, updated_at
+                SELECT id, chat_id, message_id, sender_id, event_datetime, location, updated_at
                 FROM events
                 WHERE event_datetime > ?
             """,
@@ -331,7 +330,6 @@ class DatabaseManager:
                             row["sender_id"],
                             event_dt,
                             row["location"],
-                            row["reminders_sent"],
                             row["updated_at"],
                         )
                     )
@@ -345,23 +343,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting events for reminders: {e}")
             return []
-        finally:
-            conn.close()
-
-    def update_event_reminders(self, event_id, reminders_sent):
-        """Update the reminders sent for an event."""
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE events SET reminders_sent = ? WHERE id = ?
-            """,
-                (json.dumps(reminders_sent), event_id),
-            )
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Error updating event reminders: {e}")
         finally:
             conn.close()
 
