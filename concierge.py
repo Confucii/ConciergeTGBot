@@ -3,7 +3,6 @@
 # Now with SQLite persistence
 import logging
 import datetime
-import json
 from telegram import (
     Update,
     ChatMember,
@@ -55,7 +54,8 @@ DB_PATH = os.getenv(
 )
 
 # Group rules link
-GROUP_RULES_LINK = os.getenv("GROUP_RULES_LINK", "https://t.me/c/2593760473/3")
+GROUP_RULES_LINK = os.getenv("GROUP_RULES_LINK")
+NEW_MEMBERS_FORM_LINK = os.getenv("NEW_MEMBERS_FORM_LINK")
 
 # Initialize database manager
 db = DatabaseManager.DatabaseManager(DB_PATH)
@@ -141,10 +141,6 @@ async def handle_notifications_command(
     if update.edited_message:
         return  # Ignore edits
     if update.effective_user.id != update.effective_chat.id:
-        await context.bot.send_message(
-            chat_id=update.effective_user.id,
-            text="❌ You can only toggle notifications in private chat.",
-        )
         return
     user = update.effective_user
 
@@ -240,30 +236,25 @@ async def send_daily_welcome(context: ContextTypes.DEFAULT_TYPE):
             # Create ONE welcome message for ALL users
             if len(mentions) == 1:
                 welcome_message = (
-                    f"Welcome to {chat.title}, {mentions[0]}! 👋\n\n"
-                    f"We're glad to have you here!\n\n"
-                    f"Please take a moment to read our group rules and guidelines: "
-                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                    f"Привет, {mentions[0]}! 👋 Добро пожаловать в нашу группу!\n\n"
+                    f"Будьте добры, представьтесь: расскажите немного о себе — кем вы являетесь профессионально и по жизни, "
+                    f"в чем нуждаетесь и как можете быть полезны другим участникам группы.\n\n"
+                    f'После этого, пожалуйста, заполните форму <a href="{NEW_MEMBERS_FORM_LINK}"><b>базы участников группы</b></a>.\n\n'
+                    f'И обязательно прочитайте <a href="{GROUP_RULES_LINK}"><b>Правила нашей группы</b></a> 🧐'
                 )
             else:
-                mentions_text = (
-                    ", ".join(mentions[:-1]) + f" and {mentions[-1]}"
-                )
+                mentions_text = ", ".join(mentions[:-1]) + f" и {mentions[-1]}"
                 welcome_message = (
-                    f"Welcome to {chat.title}, {mentions_text}! 👋\n\n"
-                    f"We're glad to have you all here!\n\n"
-                    f"Please take a moment to read our group rules and guidelines: "
-                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                    f"Привет, {mentions_text}! 👋 Добро пожаловать в нашу группу!\n\n"
+                    f"Будьте добры, представьтесь: расскажите немного о себе — кем вы являетесь профессионально и по жизни, "
+                    f"в чем нуждаетесь и как можете быть полезны другим участникам группы.\n\n"
+                    f'После этого, пожалуйста, заполните форму <a href="{NEW_MEMBERS_FORM_LINK}"><b>базы участников группы</b></a>.\n\n'
+                    f'И обязательно прочитайте <a href="{GROUP_RULES_LINK}"><b>Правила нашей группы</b></a> 🧐'
                 )
-
-            # Send the message
-            reply_id_str = db.get_setting("welcome_message_id")
-            reply_id = int(reply_id_str) if reply_id_str else None
 
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=welcome_message,
-                reply_to_message_id=reply_id,
                 parse_mode="HTML",
             )
 
@@ -285,7 +276,7 @@ async def send_intro_reminders(context: ContextTypes.DEFAULT_TYPE):
     today = datetime.date.today()
 
     # Check if today is one of the notification days
-    if today.day not in [6, 8, 15, 22]:
+    if today.day not in [1, 12, 15, 22]:
         return
 
     # Get ALL users who need intro reminders (joined 3+ days ago, haven't posted, not yet sent intro)
@@ -324,33 +315,26 @@ async def send_intro_reminders(context: ContextTypes.DEFAULT_TYPE):
             # Create ONE intro reminder message for ALL users
             if len(mentions) == 1:
                 message = (
-                    f"Hey {mentions[0]}! 👋\n\n"
-                    f"We noticed you haven't said anything yet since joining our group. "
-                    f"Feel free to introduce yourself and join our discussions! "
-                    f"We'd love to hear from you.\n\n"
-                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                    f"Привет, {mentions[0]}! 👋\n\n"
+                    f"Уже прошло несколько дней, но Вы так и не представились группе. "
+                    f"Пожалуйста, расскажите немного о себе в чате — это помогает всем участникам быстрее адаптироваться.\n\n"
+                    f'Не забудьте заполнить <a href="{NEW_MEMBERS_FORM_LINK}"><b>форму участника</b></a>.\n\n'
+                    f'И обязательно прочитайте <a href="{GROUP_RULES_LINK}"><b>правила группы</b></a> 🧐'
                 )
             else:
-                mentions_text = (
-                    ", ".join(mentions[:-1]) + f" and {mentions[-1]}"
-                )
+                mentions_text = ", ".join(mentions[:-1]) + f" и {mentions[-1]}"
                 message = (
-                    f"Hey {mentions_text}! 👋\n\n"
-                    f"We noticed you haven't said anything yet since joining our group. "
-                    f"Feel free to introduce yourselves and join our discussions! "
-                    f"We'd love to hear from you all.\n\n"
-                    f'<a href="{GROUP_RULES_LINK}">Group Rules</a>'
+                    f"Привет, {mentions_text}! 👋\n\n"
+                    f"Уже прошло несколько дней, но вы так и не представились группе. "
+                    f"Пожалуйста, расскажите немного о себе в чате — это помогает всем участникам быстрее адаптироваться.\n\n"
+                    f'Не забудьте заполнить <a href="{NEW_MEMBERS_FORM_LINK}"><b>форму участника</b></a>.\n\n'
+                    f'И обязательно прочитайте <a href="{GROUP_RULES_LINK}"><b>правила группы</b></a> 🧐'
                 )
-
-            # Send the message
-            reply_id_str = db.get_setting("welcome_message_id")
-            reply_id = int(reply_id_str) if reply_id_str else None
 
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=message,
                 parse_mode="HTML",
-                reply_to_message_id=reply_id,
             )
 
             # Mark all users as having received intro reminder
@@ -376,7 +360,7 @@ async def process_event_message(message, context: ContextTypes.DEFAULT_TYPE):
     if not match:
         await context.bot.send_message(
             chat_id=message.from_user.id,
-            text="❗ Invalid #event format. Use: `#event YYYY-MM-DD HH:MM Location`",
+            text="❗ Неверный формат команды #event. Используйте: `#event ГГГГ-ММ-ДД ЧЧ:ММ Локация`",
             parse_mode="Markdown",
         )
         return None
@@ -392,7 +376,7 @@ async def process_event_message(message, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await context.bot.send_message(
             chat_id=message.from_user.id,
-            text="❗ Invalid date format. Use: `#event YYYY-MM-DD HH:MM Location`",
+            text="❗ Неверный формат даты. Используйте: `#event ГГГГ-ММ-ДД ЧЧ:ММ Локация`",
             parse_mode="Markdown",
         )
         return None
@@ -401,7 +385,7 @@ async def process_event_message(message, context: ContextTypes.DEFAULT_TYPE):
     if event_datetime <= now:
         await context.bot.send_message(
             chat_id=message.from_user.id,
-            text="❗ Event date must be in the future.",
+            text="❗ Дата события должна быть в будущем.",
         )
         return None
 
@@ -458,16 +442,6 @@ async def handle_event_tagged_message_edit(
         event_datetime, location = result
         event_datetime = datetime.datetime.fromisoformat(event_datetime)
 
-        # Send event changed notification to group
-        await context.bot.send_message(
-            chat_id=edited_msg.chat_id,
-            text=f"✏️ *Event Updated*\n\n"
-            f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
-            f"📍 *Location:* {location}",
-            parse_mode="Markdown",
-            reply_to_message_id=edited_msg.message_id,
-        )
-
         # Send event changed notification to all subscribed users
         await send_event_notification_to_subscribers(
             context, edited_msg, event_datetime, location, is_new_event=False
@@ -484,7 +458,7 @@ async def send_event_notification_to_subscribers(
     """Send event notifications to all subscribed users."""
     try:
         users_to_notify = db.get_users_for_notification()
-        action_text = "New Event" if is_new_event else "Event Updated"
+        action_text = "Новое событие" if is_new_event else "Событие обновлено"
 
         for user in users_to_notify:
             try:
@@ -492,8 +466,9 @@ async def send_event_notification_to_subscribers(
                 await context.bot.send_message(
                     chat_id=user[0],
                     text=f"📢 *{action_text}*\n\n"
-                    f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
-                    f"📍 *Location:* {location}",
+                    f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                    f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
+                    f"📍 *Место:* {location}\n",
                     parse_mode="Markdown",
                 )
 
@@ -567,21 +542,22 @@ async def check_and_send_event_reminders(context: ContextTypes.DEFAULT_TYPE):
         try:
             # Determine reminder text based on days_before
             if days_before == 0:
-                reminder_text = "📅 *Today's Event*"
-                days_text = "Today"
-            elif days_before == 1:
-                reminder_text = "⏰ *Event Reminder* — Tomorrow!"
-                days_text = "Tomorrow"
-            else:
                 reminder_text = (
-                    f"⏰ *Event Reminder* — {days_before} days left!"
+                    "📅 *Митап группы Нетворкинг состоится уже сегодня!*"
                 )
-                days_text = f"{days_before} days"
+                days_text = "Сегодня"
+            elif days_before == 1:
+                reminder_text = "⏰ *Напоминаем: митап группы Нетворкинг состоится завтра!*"
+                days_text = "Завтра"
+            else:
+                reminder_text = f"⏰ *Напоминаем: митап группы Нетворкинг состоится через {days_before} дней!*"
+                days_text = f"Через {days_before} дней"
 
             message_content = (
                 f"{reminder_text}\n\n"
-                f"📅 *Date:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
-                f"📍 *Location:* {location}"
+                f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
+                f"📍 *Место:* {location}\n"
             )
 
             # Send to subscribed users
@@ -651,9 +627,10 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(
                         chat_id=sender_id,
                         text=(
-                            f"❗ The event message has been deleted. All reminders have been canceled.\n\n"
-                            f"📅 *Date/Time:* {event_datetime.strftime('%Y-%m-%d %H:%M')}\n"
-                            f"📍 *Location:* {location}"
+                            f"❗ Сообщение с событием было удалено. Все напоминания отменены.\n\n"
+                            f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                            f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
+                            f"📍 *Место:* {location}\n"
                         ),
                         parse_mode="Markdown",
                     )
@@ -713,14 +690,14 @@ def main() -> None:
     # Schedule daily welcome at 6PM Eastern
     application.job_queue.run_daily(
         send_daily_welcome,
-        time=datetime.time(hour=18, minute=0, tzinfo=eastern),  # 6PM Eastern
+        time=datetime.time(hour=18, minute=00, tzinfo=eastern),  # 6PM Eastern
         name="daily_welcome",
     )
 
     # Schedule intro reminder check daily at 9AM Eastern (will only send on specific days)
     application.job_queue.run_daily(
         send_intro_reminders,
-        time=datetime.time(hour=17, minute=0, tzinfo=eastern),  # 5PM Eastern
+        time=datetime.time(hour=17, minute=00, tzinfo=eastern),  # 5PM Eastern
         name="intro_reminders",
     )
 
