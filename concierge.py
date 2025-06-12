@@ -5,7 +5,6 @@ import logging
 import datetime
 from telegram import (
     Update,
-    ChatMember,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     BotCommand,
@@ -19,7 +18,7 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler,
 )
-from telegram.error import TelegramError, BadRequest
+from telegram.error import TelegramError, BadRequest, Forbidden
 import pytz
 import re
 import os
@@ -409,9 +408,13 @@ async def handle_event_tagged_message(
     chat_id = message.chat_id
 
     # Admin check
-    member = await context.bot.get_chat_member(chat_id, user.id)
-    if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-        await message.reply_text("Only admins can schedule events.")
+    admins = await context.bot.get_chat_administrators(chat_id)
+    is_admin = any(admin.user.id == user.id for admin in admins)
+
+    if not is_admin:
+        await message.reply_text(
+            "Только администраторы могут создавать события."
+        )
         return
 
     result = await process_event_message(message, context)
@@ -429,7 +432,9 @@ async def handle_event_tagged_message_edit(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     logger.info("Handling edited message for event.")
+    user = update.effective_user
     edited_msg = update.edited_message
+    chat_id = edited_msg.chat_id
     if (
         not edited_msg
         or not edited_msg.text
@@ -437,15 +442,49 @@ async def handle_event_tagged_message_edit(
     ):
         return
 
+    admins = await context.bot.get_chat_administrators(chat_id)
+    is_admin = any(admin.user.id == user.id for admin in admins)
+
+    if not is_admin:
+        await edited_msg.reply_text(
+            "Только администраторы могут создавать события."
+        )
+        return
+
+    event_exists = db.get_event(edited_msg.chat_id, edited_msg.message_id)
+
     result = await process_event_message(edited_msg, context)
     if result:
         event_datetime, location = result
         event_datetime = datetime.datetime.fromisoformat(event_datetime)
+        if event_exists:
+            # Event updated
+            await context.bot.send_message(
+                chat_id=edited_msg.chat_id,
+                text=f"✏️ *Событие обновлено*\n\n"
+                f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
+                f"📍 *Место:* {location}\n",
+                parse_mode="Markdown",
+                reply_to_message_id=edited_msg.message_id,
+            )
 
-        # Send event changed notification to all subscribed users
-        await send_event_notification_to_subscribers(
-            context, edited_msg, event_datetime, location, is_new_event=False
-        )
+            # Send event changed notification to all subscribed users
+            await send_event_notification_to_subscribers(
+                context,
+                edited_msg,
+                event_datetime,
+                location,
+                is_new_event=False,
+            )
+        else:
+            await send_event_notification_to_subscribers(
+                context,
+                edited_msg,
+                event_datetime,
+                location,
+                is_new_event=True,
+            )
 
 
 async def send_event_notification_to_subscribers(
@@ -617,10 +656,15 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.delete_message(
                 chat_id=sender_id, message_id=forwarded_msg.message_id
             )
-        except BadRequest as e:
+        except (BadRequest, Forbidden) as e:
+            logger.warning(
+                f"Failed to forward message {message_id} for event {event_id}: {e}"
+            )
             if (
                 "message to forward not found" in str(e).lower()
                 or "message_id_invalid" in str(e).lower()
+                or "bots can't send messages to bots" in str(e).lower()
+                or "bot was blocked by the user" in str(e).lower()
             ):
                 # Message is deleted, notify sender and clean up
                 try:
@@ -710,7 +754,7 @@ def main() -> None:
     application.job_queue.run_repeating(
         cleanup_deleted_events,
         interval=10800,  # Check every 3 hours
-        first=10,  # Start 10 seconds after bot startup
+        first=20,  # Start 20 seconds after bot startup
     )
 
     # Log when the bot starts

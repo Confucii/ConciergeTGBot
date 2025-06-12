@@ -141,7 +141,7 @@ class DatabaseManager:
             cursor.execute(
                 """
                 UPDATE users SET user_posted = 1
-                WHERE chat_id = ? AND user_id = ?
+                WHERE chat_id = ? AND user_id = ? AND user_posted = 0
             """,
                 (chat_id, user_id),
             )
@@ -331,6 +331,25 @@ class DatabaseManager:
             logger.info(f"Added/updated event {message_id}")
         except Exception as e:
             logger.error(f"Error adding event: {e}")
+        finally:
+            conn.close()
+
+    def get_event(self, chat_id, message_id):
+        """Find an event by chat_id and message_id."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM events
+                WHERE chat_id = ? AND message_id = ?
+            """,
+                (chat_id, message_id),
+            )
+            return cursor.fetchone()
+        except Exception as e:
+            logger.error(f"Error finding event: {e}")
+            return None
         finally:
             conn.close()
 
