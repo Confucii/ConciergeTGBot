@@ -9,6 +9,7 @@ from telegram import (
     InlineKeyboardMarkup,
     BotCommand,
     MenuButtonCommands,
+    BotCommandScopeAllPrivateChats,
 )
 from telegram.ext import (
     Application,
@@ -62,10 +63,11 @@ db = DatabaseManager.DatabaseManager(DB_PATH)
 
 async def set_menu_button_and_commands(application):
     await application.bot.set_my_commands(
-        [BotCommand("notifications", "Toggle event notifications")]
+        [BotCommand("notifications", "Toggle event notifications")],
+        scope=BotCommandScopeAllPrivateChats(),
     )
     await application.bot.set_chat_menu_button(
-        menu_button=MenuButtonCommands()
+        menu_button=MenuButtonCommands(),
     )
 
 
@@ -117,9 +119,9 @@ async def toggle_user_subscription(
     db.toggle_notification_subscription(user_id)
 
     if db.get_user_notification_status(user_id):
-        return f"✅ Subscription status updated for {user_first_name}. You are now *subscribed*."
+        return f"✅ Статус подписки обновлён для {user_first_name}. Теперь вы *подписаны*."
     else:
-        return f"✅ Subscription status updated for {user_first_name}. You are now *unsubscribed*."
+        return f"✅ Статус подписки обновлён для {user_first_name}. Теперь вы *не подписаны*."
 
 
 async def handle_toggle_subscription(
@@ -275,7 +277,7 @@ async def send_intro_reminders(context: ContextTypes.DEFAULT_TYPE):
     today = datetime.date.today()
 
     # Check if today is one of the notification days
-    if today.day not in [1, 12, 15, 22]:
+    if today.day not in [1, 8, 15, 22]:
         return
 
     # Get ALL users who need intro reminders (joined 3+ days ago, haven't posted, not yet sent intro)
@@ -461,7 +463,7 @@ async def handle_event_tagged_message_edit(
             # Event updated
             await context.bot.send_message(
                 chat_id=edited_msg.chat_id,
-                text=f"✏️ *Событие обновлено*\n\n"
+                text=f"✏️ *Митап обновлён*\n\n"
                 f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
                 f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
                 f"📍 *Место:* {location}\n",
@@ -473,16 +475,12 @@ async def handle_event_tagged_message_edit(
             await send_event_notification_to_subscribers(
                 context,
                 edited_msg,
-                event_datetime,
-                location,
                 is_new_event=False,
             )
         else:
             await send_event_notification_to_subscribers(
                 context,
                 edited_msg,
-                event_datetime,
-                location,
                 is_new_event=True,
             )
 
@@ -490,24 +488,19 @@ async def handle_event_tagged_message_edit(
 async def send_event_notification_to_subscribers(
     context: ContextTypes.DEFAULT_TYPE,
     message,
-    event_datetime: datetime.datetime,
-    location: str,
     is_new_event: bool,
 ):
     """Send event notifications to all subscribed users."""
     try:
         users_to_notify = db.get_users_for_notification()
-        action_text = "Новое событие" if is_new_event else "Событие обновлено"
+        action_text = "Новый митап" if is_new_event else "Митап обновлён"
 
         for user in users_to_notify:
             try:
                 # Send notification text
                 await context.bot.send_message(
                     chat_id=user[0],
-                    text=f"📢 *{action_text}*\n\n"
-                    f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
-                    f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
-                    f"📍 *Место:* {location}\n",
+                    text=f"📢 *{action_text}*\n\n",
                     parse_mode="Markdown",
                 )
 
@@ -589,8 +582,12 @@ async def check_and_send_event_reminders(context: ContextTypes.DEFAULT_TYPE):
                 reminder_text = "⏰ *Напоминаем: митап группы Нетворкинг состоится завтра!*"
                 days_text = "Завтра"
             else:
-                reminder_text = f"⏰ *Напоминаем: митап группы Нетворкинг состоится через {days_before} дней!*"
-                days_text = f"Через {days_before} дней"
+                if days_before >= 4:
+                    day = "дней"
+                else:
+                    day = "дня"
+                reminder_text = f"⏰ *Напоминаем: митап группы Нетворкинг состоится через {days_before} {day}!*"
+                days_text = f"Через {days_before} {day}"
 
             message_content = (
                 f"{reminder_text}\n\n"
@@ -641,7 +638,7 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
         message_id,
         sender_id,
         event_datetime,
-        location,
+        _,
         _,
     ) in events:
         try:
@@ -668,16 +665,30 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
             ):
                 # Message is deleted, notify sender and clean up
                 try:
-                    await context.bot.send_message(
-                        chat_id=sender_id,
-                        text=(
-                            f"❗ Сообщение с событием было удалено. Все напоминания отменены.\n\n"
-                            f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
-                            f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
-                            f"📍 *Место:* {location}\n"
-                        ),
-                        parse_mode="Markdown",
-                    )
+                    users_to_notify = db.get_users_for_notification()
+                    for user in users_to_notify:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=user[0],
+                                text=(
+                                    f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
+                                    f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                                ),
+                                parse_mode="Markdown",
+                            )
+
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
+                                    f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                                ),
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to send event notification to user {user[0]}: {e}"
+                            )
                 except Exception:
                     pass  # User might have blocked the bot
 
@@ -738,10 +749,10 @@ def main() -> None:
         name="daily_welcome",
     )
 
-    # Schedule intro reminder check daily at 9AM Eastern (will only send on specific days)
+    # Schedule intro reminder check daily at 20PM Eastern (will only send on specific days)
     application.job_queue.run_daily(
         send_intro_reminders,
-        time=datetime.time(hour=17, minute=00, tzinfo=eastern),  # 5PM Eastern
+        time=datetime.time(hour=20, minute=00, tzinfo=eastern),  # 20PM Eastern
         name="intro_reminders",
     )
 
