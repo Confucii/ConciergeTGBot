@@ -665,20 +665,19 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
             ):
                 # Message is deleted, notify sender and clean up
                 try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
+                            f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                        ),
+                        parse_mode="Markdown",
+                    )
                     users_to_notify = db.get_users_for_notification()
                     for user in users_to_notify:
                         try:
                             await context.bot.send_message(
                                 chat_id=user[0],
-                                text=(
-                                    f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
-                                    f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
-                                ),
-                                parse_mode="Markdown",
-                            )
-
-                            await context.bot.send_message(
-                                chat_id=chat_id,
                                 text=(
                                     f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
                                     f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
