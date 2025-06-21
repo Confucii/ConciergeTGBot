@@ -421,12 +421,12 @@ async def handle_event_tagged_message(
 
     result = await process_event_message(message, context)
     if result:
-        event_datetime, location = result
+        event_datetime, _ = result
         event_datetime = datetime.datetime.fromisoformat(event_datetime)
 
         # Send event created notification to all subscribed users
         await send_event_notification_to_subscribers(
-            context, message, event_datetime, location, is_new_event=True
+            context, message, is_new_event=True
         )
 
 
