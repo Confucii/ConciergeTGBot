@@ -657,43 +657,37 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
             logger.warning(
                 f"Failed to forward message {message_id} for event {event_id}: {e}"
             )
-            if (
-                "message to forward not found" in str(e).lower()
-                or "message_id_invalid" in str(e).lower()
-                or "bots can't send messages to bots" in str(e).lower()
-                or "bot was blocked by the user" in str(e).lower()
-            ):
-                # Message is deleted, notify sender and clean up
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
-                            f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
-                        ),
-                        parse_mode="Markdown",
-                    )
-                    users_to_notify = db.get_users_for_notification()
-                    for user in users_to_notify:
-                        try:
-                            await context.bot.send_message(
-                                chat_id=user[0],
-                                text=(
-                                    f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
-                                    f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
-                                ),
-                                parse_mode="Markdown",
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send event notification to user {user[0]}: {e}"
-                            )
-                except Exception:
-                    pass  # User might have blocked the bot
+            # Message is deleted, notify sender and clean up
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
+                        f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                    ),
+                    parse_mode="Markdown",
+                )
+                users_to_notify = db.get_users_for_notification()
+                for user in users_to_notify:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user[0],
+                            text=(
+                                f"❗**Внимание**: митап группы Нетворкинг отменился!\n\n"
+                                f"📅 *Дата митапа:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to send event notification to user {user[0]}: {e}"
+                        )
+            except Exception:
+                pass  # User might have blocked the bot
 
-                # Delete from database
-                db.delete_event(chat_id, message_id)
-                logger.info(f"Deleted event {event_id} due to deleted message")
+            # Delete from database
+            db.delete_event(chat_id, message_id)
+            logger.info(f"Deleted event {event_id} due to deleted message")
 
 
 def unified_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
