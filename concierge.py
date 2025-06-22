@@ -88,13 +88,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "username": user.username,
     }
     initialize_user_private_chat(**user_data)  # Mark user as having posted
-    welcome_text = f"👋 Welcome, {user.first_name}!\n\nWould you like to subscribe to event notifications?"
+    welcome_text = f"👋Добро пожаловать, {user.first_name}!\n\nХотите подписаться на уведомления о событиях?"
 
     # Inline button
     keyboard = [
         [
             InlineKeyboardButton(
-                "🔔 Subscribe to Event Notifications",
+                "🔔 Подписаться на уведомления о событиях",
                 callback_data="toggle_subscribe",
             )
         ]
@@ -492,12 +492,22 @@ async def send_event_notification_to_subscribers(
 ):
     """Send event notifications to all subscribed users."""
     try:
-        users_to_notify = db.get_users_for_notification(
-            chat_id=message.chat_id
-        )
+        users_to_notify = db.get_users_for_notification()
         action_text = "Новый митап" if is_new_event else "Митап обновлён"
 
         for user in users_to_notify:
+            member_status = await context.bot.get_chat_member(
+                message.chat_id, user[0]
+            )
+            if member_status.status not in [
+                member_status.ADMINISTRATOR,
+                member_status.MEMBER,
+                member_status.OWNER,
+            ]:
+                logger.info(
+                    f"Skipping user {user[0]} ({user[1]}) - not a member of the chat"
+                )
+                continue
             try:
                 # Send notification text
                 await context.bot.send_message(
@@ -599,12 +609,24 @@ async def check_and_send_event_reminders(context: ContextTypes.DEFAULT_TYPE):
             )
 
             # Send to subscribed users
-            users_to_notify = db.get_users_for_notification(chat_id=chat_id)
+            users_to_notify = db.get_users_for_notification()
             logger.info(
                 f"Sending {days_text} reminder for event {event_id} to {len(users_to_notify)} users"
             )
 
             for user in users_to_notify:
+                member_status = await context.bot.get_chat_member(
+                    chat_id, user[0]
+                )
+                if member_status.status not in [
+                    member_status.ADMINISTRATOR,
+                    member_status.MEMBER,
+                    member_status.OWNER,
+                ]:
+                    logger.info(
+                        f"Skipping user {user[0]} ({user[1]}) - not a member of the chat"
+                    )
+                    continue
                 try:
                     await context.bot.send_message(
                         chat_id=user[0],
@@ -669,10 +691,20 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
                     ),
                     parse_mode="Markdown",
                 )
-                users_to_notify = db.get_users_for_notification(
-                    chat_id=chat_id
-                )
+                users_to_notify = db.get_users_for_notification()
                 for user in users_to_notify:
+                    member_status = await context.bot.get_chat_member(
+                        chat_id, user[0]
+                    )
+                    if member_status.status not in [
+                        member_status.ADMINISTRATOR,
+                        member_status.MEMBER,
+                        member_status.OWNER,
+                    ]:
+                        logger.info(
+                            f"Skipping user {user[0]} ({user[1]}) - not a member of the chat"
+                        )
+                        continue
                     try:
                         await context.bot.send_message(
                             chat_id=user[0],
