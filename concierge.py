@@ -492,7 +492,9 @@ async def send_event_notification_to_subscribers(
 ):
     """Send event notifications to all subscribed users."""
     try:
-        users_to_notify = db.get_users_for_notification()
+        users_to_notify = db.get_users_for_notification(
+            chat_id=message.chat_id
+        )
         action_text = "Новый митап" if is_new_event else "Митап обновлён"
 
         for user in users_to_notify:
@@ -597,7 +599,7 @@ async def check_and_send_event_reminders(context: ContextTypes.DEFAULT_TYPE):
             )
 
             # Send to subscribed users
-            users_to_notify = db.get_users_for_notification()
+            users_to_notify = db.get_users_for_notification(chat_id=chat_id)
             logger.info(
                 f"Sending {days_text} reminder for event {event_id} to {len(users_to_notify)} users"
             )
@@ -667,7 +669,9 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
                     ),
                     parse_mode="Markdown",
                 )
-                users_to_notify = db.get_users_for_notification()
+                users_to_notify = db.get_users_for_notification(
+                    chat_id=chat_id
+                )
                 for user in users_to_notify:
                     try:
                         await context.bot.send_message(

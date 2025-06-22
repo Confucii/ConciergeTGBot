@@ -194,7 +194,7 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_users_for_notification(self):
+    def get_users_for_notification(self, chat_id):
         """Get users who are subscribed to notifications."""
         conn = self.get_connection()
         try:
@@ -203,8 +203,9 @@ class DatabaseManager:
                 """
                 SELECT chat_id, user_id, username, first_name
                 FROM users
-                WHERE notification_subscription = 1
-            """
+                WHERE notification_subscription = 1 AND chat_id = ?
+            """,
+                (chat_id,),
             )
             return cursor.fetchall()
         except Exception as e:
