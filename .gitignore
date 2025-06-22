@@ -1,3 +1,4 @@
 .env
 bot.sqlite
 __pycache__
+useful_commands.txt
