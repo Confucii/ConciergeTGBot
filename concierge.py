@@ -182,11 +182,14 @@ async def handle_user_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Mark user as having posted when they send a message."""
+    message_content = update.message.text or update.message.caption
     if (
         not update.message
-        or not update.message.text
+        or not message_content
         or update.message.new_chat_members
     ):
+        logger.info(f"Message is: {update.message}")
+        logger.info(f"Message text is: {message_content}")
         return
 
     user = update.effective_user
@@ -355,11 +358,11 @@ async def send_intro_reminders(context: ContextTypes.DEFAULT_TYPE):
 
 async def process_event_message(message, context: ContextTypes.DEFAULT_TYPE):
     """Process an event message and store it in the database."""
-    text = message.text
+    message_content = message.text or message.caption
     chat_id = message.chat_id
     msg_id = message.message_id
 
-    match = EVENT_REGEX.search(text)
+    match = EVENT_REGEX.search(message_content)
     if not match:
         await context.bot.send_message(
             chat_id=message.from_user.id,
@@ -405,7 +408,11 @@ async def handle_event_tagged_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     message = update.message
-    if not message or not message.text:
+    message_content = message.text or message.caption
+    if not message or not message_content:
+        logger.info(f"Message is: {message}")
+        logger.info(f"Message text is: {message_content}")
+        logger.info(f"Message text: {'#event' in message_content}")
         return
 
     user = update.effective_user
@@ -435,15 +442,21 @@ async def handle_event_tagged_message(
 async def handle_event_tagged_message_edit(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
-    logger.info("Handling edited message for event.")
+    logger.info("Handling edited message.")
     user = update.effective_user
     edited_msg = update.edited_message
+    message_content = edited_msg.text or edited_msg.caption
     chat_id = edited_msg.chat_id
     if (
         not edited_msg
-        or not edited_msg.text
-        or "#event" not in edited_msg.text
+        or not message_content
+        or "#event" not in message_content
     ):
+        logger.info(f"Edited message is: {edited_msg}")
+        logger.info(f"Edited message text is: {message_content}")
+        logger.info(
+            f"#event in edited message text: {'#event' in message_content}"
+        )
         return
 
     admins = await context.bot.get_chat_administrators(chat_id)
@@ -468,7 +481,7 @@ async def handle_event_tagged_message_edit(
                 text=f"✏️ *Митап обновлён*\n\n"
                 f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
                 f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
-                f"📍 *Место:* {location}\n",
+                f"📍 *Описание:* {location}\n",
                 parse_mode="Markdown",
                 reply_to_message_id=edited_msg.message_id,
             )
@@ -607,7 +620,7 @@ async def check_and_send_event_reminders(context: ContextTypes.DEFAULT_TYPE):
                 f"{reminder_text}\n\n"
                 f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
                 f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
-                f"📍 *Место:* {location}\n"
+                f"📍 *Описание:* {location}\n"
             )
 
             # Send to subscribed users
@@ -730,8 +743,12 @@ async def cleanup_deleted_events(context: ContextTypes.DEFAULT_TYPE):
 
 def unified_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
+    message_content = message.text or message.caption
+    logger.info(
+        f"Received message from {message.from_user.id} in chat {message.chat_id}: {message_content}"
+    )
 
-    if "#event" in message.text:
+    if "#event" in message_content:
         return handle_event_tagged_message(update, context)
     else:
         return handle_user_message(update, context)
@@ -770,7 +787,10 @@ def main() -> None:
 
     # Add message handler for all messages
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, unified_handler)
+        MessageHandler(
+            (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
+            unified_handler,
+        )
     )
 
     # Schedule daily welcome at 6PM Eastern
