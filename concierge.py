@@ -468,30 +468,34 @@ async def handle_event_tagged_message_edit(
         )
         return
 
-    event_exists = db.get_event(edited_msg.chat_id, edited_msg.message_id)
+    event = db.get_event(edited_msg.chat_id, edited_msg.message_id)
 
     result = await process_event_message(edited_msg, context)
     if result:
         event_datetime, location = result
         event_datetime = datetime.datetime.fromisoformat(event_datetime)
-        if event_exists:
-            # Event updated
-            await context.bot.send_message(
-                chat_id=edited_msg.chat_id,
-                text=f"✏️ *Митап обновлён*\n\n"
-                f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
-                f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
-                f"📍 *Описание:* {location}\n",
-                parse_mode="Markdown",
-                reply_to_message_id=edited_msg.message_id,
-            )
+        stored_dt = datetime.datetime.fromisoformat(event["event_datetime"])
+        stored_location = event["location"]
 
-            # Send event changed notification to all subscribed users
-            await send_event_notification_to_subscribers(
-                context,
-                edited_msg,
-                is_new_event=False,
-            )
+        if event:
+            # Event updated
+            if location != stored_location or event_datetime != stored_dt:
+                await context.bot.send_message(
+                    chat_id=edited_msg.chat_id,
+                    text=f"✏️ *Митап обновлён*\n\n"
+                    f"📅 *Дата:* {event_datetime.strftime('%Y-%m-%d')}\n"
+                    f"⏰ *Время:* {event_datetime.strftime('%H:%M')}\n"
+                    f"📍 *Описание:* {location}\n",
+                    parse_mode="Markdown",
+                    reply_to_message_id=edited_msg.message_id,
+                )
+
+                # Send event changed notification to all subscribed users
+                await send_event_notification_to_subscribers(
+                    context,
+                    edited_msg,
+                    is_new_event=False,
+                )
         else:
             await send_event_notification_to_subscribers(
                 context,
